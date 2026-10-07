@@ -198,8 +198,9 @@ class Lot:
     def raise_floor(self):
         """Smallest amount a new bid may carry."""
         leading = self.leading()
-        standing = leading.amount if leading is not None else 0
-        return max(self._min_increment, standing)
+        if leading is None:
+            return self._min_increment
+        return leading.amount + self._min_increment
 
     def reserve_met(self):
         """True when the standing bid clears the reserve."""
@@ -208,7 +209,7 @@ class Lot:
         leading = self.leading()
         if leading is None:
             return False
-        return leading.amount > self._reserve
+        return leading.amount >= self._reserve
 
     # -- escrow ---------------------------------------------------------
     def post_deposit(self, bidder, amount):
@@ -221,14 +222,14 @@ class Lot:
             raise AuctionError(
                 "lot %r takes no deposits in state %r" % (self._lot_id, self._state)
             )
-        self._deposits[bidder] = amount
+        self._deposits[bidder] = self._deposits.get(bidder, 0) + amount
         return self._deposits[bidder]
 
     def _may_bid(self, bidder):
         """True when bidder holds enough escrow to bid."""
         if self._deposit <= 0:
             return True
-        return self._deposits.get(bidder, 0) > self._deposit
+        return self._deposits.get(bidder, 0) >= self._deposit
 
     # -- bidding --------------------------------------------------------
     def place_bid(self, bidder, amount, tick):
@@ -245,7 +246,7 @@ class Lot:
             raise AuctionError(
                 "lot %r opens at tick %d" % (self._lot_id, self._opens_at)
             )
-        if self._closes_at is not None and tick > self._closes_at:
+        if self._closes_at is not None and tick >= self._closes_at:
             raise AuctionError(
                 "lot %r closed at tick %d" % (self._lot_id, self._closes_at)
             )
@@ -272,7 +273,7 @@ class Lot:
             return
         if self._closes_at - tick > self._snipe_window:
             return
-        self._closes_at = self._closes_at + self._snipe_extension
+        self._closes_at = tick + self._snipe_extension
 
     # -- closing --------------------------------------------------------
     def close(self):
@@ -309,6 +310,10 @@ class Lot:
         """Settle the lot at tick and return the statement it produced."""
         if self._state == SETTLED:
             raise AuctionError("lot %r is already settled" % (self._lot_id,))
+        if self._state == CANCELLED:
+            raise AuctionError(
+                "lot %r was cancelled and can never sell" % self._lot_id
+            )
         if not self._is_due(tick):
             raise AuctionError(
                 "lot %r is still taking bids at tick %d" % (self._lot_id, tick)
@@ -334,8 +339,8 @@ class Lot:
         """Split the escrow into refunds and charges for a closing lot."""
         refunds = {}
         charges = {}
-        for bid in self._bids:
-            bidder = bid.bidder
+        bidders = set(self._deposits) | {bid.bidder for bid in self._bids}
+        for bidder in bidders:
             held = self._deposits.get(bidder, 0)
             if bidder != winner:
                 refunds[bidder] = held
